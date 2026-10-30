@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyVoice Lexicon — personal-lexicon communication aid (proof of concept)</title>
+<style>body{font-family:system-ui,sans-serif;max-width:820px;margin:2rem auto;padding:0 1rem;line-height:1.5}
+.warn{border:3px solid #b00020;padding:1rem;background:#fff5f5}
+button{padding:.6rem 1rem;margin:.25rem;cursor:pointer}
+.board button{font-size:1.05rem;padding:.8rem 1rem}
+pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem;overflow:auto}
+input[type=text]{width:70%;padding:.5rem}
+.small{color:#555;font-size:.9rem}</style></head>
+<body>
+<h1>MyVoice Lexicon</h1>
+<p>A communication aid for speech that recognizers struggle with. Instead of a
+bigger model, it shrinks the output space: a personal lexicon of the phrases a
+speaker actually uses reranks the recognizer's n-best list.</p>
+<p><strong>What v0.1.0 is, plainly:</strong> the recognizer is a text simulator.
+You type the words the speaker tried to say, pick how garbled
+the simulated recognizer is, and the lexicon reranker does its work on a
+simulated n-best list. No audio is recorded or recognized anywhere in this
+version. Speech playback is a placeholder tone, not a synthesized voice.</p>
+
+<h2>Try recognition</h2>
+<label>Demo case:
+<select id="case">
+<option value="needs_water_severe">Severe garbling, phrase in lexicon</option>
+<option value="pain_moderate">Moderate garbling, phrase in lexicon</option>
+<option value="off_lexicon">Phrase NOT in the lexicon (honest fallback)</option>
+<option value="call_wife">Moderate garbling, person phrase</option>
+</select></label>
+<label>Tier:
+<select id="tier"><option value="frugal">frugal</option><option value="full">full</option></select></label>
+<button onclick="runDemo()">Run demo recognition</button>
+<p>Or type an utterance:
+<input type="text" id="utt" value="i need water">
+<label>Severity:
+<select id="sev"><option>mild</option><option selected>moderate</option><option>severe</option></select></label>
+<button onclick="runTyped()">Recognize typed utterance</button></p>
+
+<div class="warn"><strong>PROOF OF CONCEPT — NOT CLINICALLY TESTED.</strong>
+This tool has not been tested clinically and is a proof-of-concept for research
+and software demonstration only. It is not a medical device, it does not diagnose,
+treat, or rule out any condition, and its outputs may be wrong, including false
+positives and false negatives. Do not use it to make decisions about your health.
+For any medical issue, seek a licensed healthcare professional. In an emergency,
+go to your nearest emergency room or dial 911 immediately.
+Its phrase accuracy on real speakers is unknown: it has not been tested with
+recorded speech or real speakers, only on synthetic text fixtures.</div>
+<pre id="out">Results appear here, under the disclaimer, on purpose.</pre>
+<p class="small">Wrong phrase? One-tap correction teaches the lexicon:
+<span id="corrections"></span></p>
+
+<h2>Phrase board (aphasia mode)</h2>
+<p>Tap a phrase to voice it. In v0.1.0 playback is a stub tone standing in for
+speech; a real deployment speaks the phrase in a chosen TTS voice, or the
+speaker's banked voice where they have recorded one with consent.</p>
+<div id="board" class="board"></div>
+<p id="spoken" class="small"></p>
+
+<h2>Lexicon</h2>
+<p id="lexsize" class="small"></p>
+<input type="text" id="newphrase" placeholder="Add a phrase, e.g. i need my charger">
+<input type="text" id="newcat" placeholder="category" value="custom" size="10">
+<button onclick="addPhrase()">Add to lexicon</button>
+<pre id="lexout"></pre>
+
+<script>
+let lastRanked = [];
+async function showResult(j){
+  lastRanked = j.ranked || [];
+  document.getElementById('out').textContent =
+    'Selected: "'+j.selected_phrase+'"  (source: '+j.source+', in lexicon: '+j.in_lexicon+
+    ', confidence: '+j.confidence+', tier: '+j.tier+', verifier ok: '+j.verifier_ok+')\n'+
+    'Simulated n-best: '+ j.nbest.map(c=>'"'+c.text+'" ('+c.score+')').join('  ') + '\n\n' + j.summary;
+  const box = document.getElementById('corrections');
+  box.innerHTML = '';
+  lastRanked.slice(0,3).forEach(r=>{
+    const b=document.createElement('button');
+    b.textContent = 'It was: '+r.phrase;
+    b.onclick = ()=>correct(r.phrase);
+    box.appendChild(b);
+  });
+}
+async function runDemo(){
+  const c=document.getElementById('case').value, t=document.getElementById('tier').value;
+  const r=await fetch('/api/demo/recognize?case='+encodeURIComponent(c),{method:'POST',headers:{'X-Tier':t}});
+  showResult(await r.json());
+}
+async function runTyped(){
+  const t=document.getElementById('tier').value;
+  const r=await fetch('/api/recognize',{method:'POST',headers:{'Content-Type':'application/json','X-Tier':t},
+    body:JSON.stringify({utterance_text:document.getElementById('utt').value,
+                         severity:document.getElementById('sev').value})});
+  showResult(await r.json());
+}
+async function correct(phrase){
+  const r=await fetch('/api/lexicon/correct',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({phrase:phrase})});
+  const j=await r.json();
+  document.getElementById('spoken').textContent = 'Lexicon learned: "'+j.phrase+'" (uses: '+j.uses+', size: '+j.size+').';
+  loadBoard(); loadLexicon();
+}
+async function loadBoard(){
+  const r=await fetch('/api/board'); const j=await r.json();
+  const box=document.getElementById('board'); box.innerHTML='';
+  Object.keys(j.board).forEach(cat=>{
+    const h=document.createElement('h3'); h.textContent=cat; box.appendChild(h);
+    j.board[cat].forEach(p=>{
+      const b=document.createElement('button'); b.textContent=p;
+      b.onclick=()=>speak(p); box.appendChild(b);
+    });
+  });
+}
+async function speak(text){
+  const t=document.getElementById('tier').value;
+  const r=await fetch('/api/speak',{method:'POST',headers:{'Content-Type':'application/json','X-Tier':t},
+    body:JSON.stringify({text:text})});
+  const blob=await r.blob();
+  const url=URL.createObjectURL(blob);
+  await new Audio(url).play().catch(()=>{});
+  document.getElementById('spoken').textContent =
+    'Voiced (stub tone placeholder in v0.1.0): "'+text+'"';
+}
+async function loadLexicon(){
+  const r=await fetch('/api/lexicon'); const j=await r.json();
+  document.getElementById('lexsize').textContent = 'Lexicon size: '+j.size+' phrases (design range 50-300 for a real speaker).';
+  document.getElementById('lexout').textContent =
+    j.phrases.map(p=>p.phrase+'  ['+p.category+', uses '+p.uses+']').join('\n');
+}
+async function addPhrase(){
+  const p=document.getElementById('newphrase').value, c=document.getElementById('newcat').value||'custom';
+  const r=await fetch('/api/lexicon',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({phrase:p,category:c})});
+  if(r.ok){ document.getElementById('newphrase').value=''; loadBoard(); loadLexicon(); }
+}
+loadBoard(); loadLexicon();
+</script>
+</body></html>
